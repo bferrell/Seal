@@ -1,0 +1,138 @@
+name: Build fork release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/fork-release.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'bferrell/Seal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure release signing if available
+        id: signing
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          ALIAS: ${{ secrets.ALIAS }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          names = ['SIGNING_KEY', 'ALIAS', 'KEY_STORE_PASSWORD', 'KEY_PASSWORD']
+          present = [bool(os.environ.get(name)) for name in names]
+          if any(present) and not all(present):
+              raise SystemExit('Signing configuration is incomplete; configure all four signing secrets.')
+          signed = all(present)
+          if signed:
+              key = Path(os.environ['RUNNER_TEMP']) / 'fork-release.jks'
+              key.write_bytes(base64.b64decode(os.environ['SIGNING_KEY'], validate=True))
+              key.chmod(0o600)
+              def escape(value):
+                  return ''.join('\\u%04x' % unit for unit in
+                      [int.from_bytes(value.encode('utf-16-be')[i:i+2], 'big')
+                       for i in range(0, len(value.encode('utf-16-be')), 2)])
+              values = {'storeFile': str(key), 'keyAlias': os.environ['ALIAS'],
+                        'storePassword': os.environ['KEY_STORE_PASSWORD'],
+                        'keyPassword': os.environ['KEY_PASSWORD']}
+              config = Path('keystore.properties')
+              config.write_text(''.join(f'{k}={escape(v)}\n' for k,v in values.items()))
+              config.chmod(0o600)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'signed={str(signed).lower()}\n')
+          PY
+
+      - name: Build APKs and run unit tests
+        run: ./gradlew :app:assembleGenericRelease :app:testGenericReleaseUnitTest --console=plain
+
+      - name: Stage APKs and checksums
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, shutil
+          from pathlib import Path
+          apks = sorted(Path('app/build/outputs/apk/generic/release').glob('*.apk'))
+          if not apks:
+              raise SystemExit('No release APKs produced')
+          target = Path('dist')
+          target.mkdir()
+          suffix = 'signed' if os.environ['SIGNED'] == 'true' else 'unsigned'
+          checksums = []
+          for apk in apks:
+              dest = target / f'fork-{apk.stem}-{suffix}.apk'
+              shutil.copy2(apk, dest)
+              checksums.append(f'{hashlib.sha256(dest.read_bytes()).hexdigest()}  {dest.name}\n')
+          (target / 'SHA256SUMS').write_text(''.join(checksums))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fork-release-apks
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 20
+
+      - name: Create draft prerelease and upload APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        shell: bash
+        run: |
+          tag="v2.0.0-alpha.5-fork.${BUILD_NUMBER}"
+          cat > release-notes.md <<'NOTES'
+          Fork build with mandatory yt-dlp release checks before metadata requests, downloads, and custom commands.
+
+          Uses the latest release on the selected channel (nightly by default). Requests stop when the check fails. yt-dlp operations run one at a time to prevent replacement of files in use.
+
+          Built with JDK 21. Unit tests must pass before these artifacts are published to this draft. Device installation and live downloads have not been tested.
+          NOTES
+          if [ "$SIGNED" = true ]; then
+            echo 'APKs are signed using this repository’s configured signing key.' >> release-notes.md
+          else
+            echo 'APKs are UNSIGNED and require signing before installation. Configure SIGNING_KEY, ALIAS, KEY_STORE_PASSWORD, and KEY_PASSWORD for signed builds.' >> release-notes.md
+          fi
+          printf '\nSource commit: %s\n' "$BUILD_SHA" >> release-notes.md
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$BUILD_SHA" --draft --prerelease \
+              --title "Fork 2.0.0-alpha.5 build ${BUILD_NUMBER}" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" dist/* --clobber
+          gh release view "$tag" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: app/build/test-results/testGenericReleaseUnitTest/
+          if-no-files-found: ignore
+
+      - name: Remove signing files
+        if: always()
+        run: rm -f keystore.properties "$RUNNER_TEMP/fork-release.jks"
