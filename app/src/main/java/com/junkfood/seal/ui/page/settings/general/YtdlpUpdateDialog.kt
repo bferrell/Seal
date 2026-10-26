@@ -119,6 +119,13 @@ fun YtdlpUpdateChannelDialog(modifier: Modifier = Modifier, onDismissRequest: ()
             LazyColumn() {
                 item {
                     Text(
+                        text = stringResource(R.string.ytdlp_execution_update_notice),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                item {
+                    Text(
                         text = stringResource(id = R.string.update_channel),
                         modifier =
                             Modifier.fillMaxWidth()

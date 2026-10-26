@@ -38,11 +38,11 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import java.util.Locale
 
 object DownloadUtil {
 
@@ -117,7 +117,7 @@ object DownloadUtil {
                     }
                 }
             }
-            execute(request, playlistURL).out.run {
+            UpdateUtil.executeYtDlp(request, playlistURL).out.run {
                 val playlistInfo = jsonFormat.decodeFromString<PlaylistResult>(this)
                 if (playlistInfo.type != "playlist") {
                     jsonFormat.decodeFromString<VideoInfo>(this)
@@ -131,8 +131,7 @@ object DownloadUtil {
         taskKey: String? = null,
     ): Result<VideoInfo> =
         request.runCatching {
-            val response: YoutubeDLResponse =
-                YoutubeDL.getInstance().execute(request, taskKey, null)
+            val response: YoutubeDLResponse = UpdateUtil.executeYtDlp(request, taskKey, null)
             jsonFormat.decodeFromString(response.out)
         }
 
@@ -531,11 +530,12 @@ object DownloadUtil {
                     7 -> "+res"
                     else -> ""
                 }
-            val sorter = if (videoFormat == FORMAT_COMPATIBILITY) {
-                connectWithDelimiter(format, res, delimiter = ",")
-            } else {
-                connectWithDelimiter(res, format, delimiter = ",")
-            }
+            val sorter =
+                if (videoFormat == FORMAT_COMPATIBILITY) {
+                    connectWithDelimiter(format, res, delimiter = ",")
+                } else {
+                    connectWithDelimiter(res, format, delimiter = ",")
+                }
             return@run sorter
         }
 
@@ -797,8 +797,11 @@ object DownloadUtil {
                     for (s in request.buildCommand()) Log.d(TAG, s)
                 }
                 .runCatching {
-                    YoutubeDL.getInstance()
-                        .execute(request = this, processId = taskId, callback = progressCallback)
+                    UpdateUtil.executeYtDlp(
+                        request = this,
+                        processId = taskId,
+                        callback = progressCallback,
+                    )
                 }
                 .onFailure { th ->
                     return if (
@@ -908,8 +911,11 @@ object DownloadUtil {
             }
 
         return runCatching {
-            YoutubeDL.getInstance()
-                .execute(request = request, processId = taskId, callback = progressCallback)
+            UpdateUtil.executeYtDlp(
+                request = request,
+                processId = taskId,
+                callback = progressCallback,
+            )
         }
     }
 
@@ -951,7 +957,7 @@ object DownloadUtil {
             withContext(Dispatchers.Main) { onTaskStarted(template, url) }
             runCatching {
                     val response =
-                        YoutubeDL.getInstance().execute(request = request, processId = taskId) {
+                        UpdateUtil.executeYtDlp(request = request, processId = taskId) {
                             progress,
                             _,
                             text ->

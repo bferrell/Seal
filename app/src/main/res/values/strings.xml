@@ -450,4 +450,5 @@
         <item quantity="one">%d audio</item>
         <item quantity="other">%d audios</item>
     </plurals>
+    <string name="ytdlp_execution_update_notice">Before every request, yt-dlp checks for the latest release on your selected channel. Requests stop if the check fails. Operations run one at a time. The interval below controls additional startup checks.</string>
 </resources>

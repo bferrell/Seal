@@ -13,6 +13,8 @@ import com.junkfood.seal.util.FileUtil.getFileProvider
 import com.junkfood.seal.util.PreferenceUtil.getInt
 import com.junkfood.seal.util.PreferenceUtil.updateLong
 import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
+import com.yausername.youtubedl_android.YoutubeDLResponse
 import java.io.File
 import java.util.regex.Pattern
 import kotlinx.coroutines.Dispatchers
@@ -53,25 +55,42 @@ object UpdateUtil {
 
     private val jsonFormat = Json { ignoreUnknownKeys = true }
 
-    suspend fun updateYtDlp(): YoutubeDL.UpdateStatus? =
-        withContext(Dispatchers.IO) {
-            val channel =
-                when (YT_DLP_UPDATE_CHANNEL.getInt()) {
-                    YT_DLP_NIGHTLY -> YoutubeDL.UpdateChannel.NIGHTLY
-                    else -> YoutubeDL.UpdateChannel.STABLE
-                }
+    private val executionGate = YtDlpExecutionGate()
 
-            YoutubeDL.getInstance()
-                .updateYoutubeDL(appContext = context, updateChannel = channel)
-                .also {
-                    if (it == YoutubeDL.UpdateStatus.DONE) {
-                        YoutubeDL.getInstance().version(context)?.let {
-                            PreferenceUtil.encodeString(YT_DLP_VERSION, it)
-                        }
-                    }
-                    val now = System.currentTimeMillis()
-                    YT_DLP_UPDATE_TIME.updateLong(now)
-                }
+    suspend fun updateYtDlp(): YoutubeDL.UpdateStatus =
+        withContext(Dispatchers.IO) { executionGate.run { updateYtDlpBlocking() } }
+
+    // Call only while holding executionGate, including during manual/UI updates.
+    private fun updateYtDlpBlocking(): YoutubeDL.UpdateStatus {
+        val channel =
+            when (YT_DLP_UPDATE_CHANNEL.getInt()) {
+                YT_DLP_NIGHTLY -> YoutubeDL.UpdateChannel.NIGHTLY
+                else -> YoutubeDL.UpdateChannel.STABLE
+            }
+        val status =
+            YoutubeDL.getInstance().updateYoutubeDL(appContext = context, updateChannel = channel)
+        check(
+            status == YoutubeDL.UpdateStatus.DONE ||
+                status == YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE
+        ) {
+            "Could not verify the latest yt-dlp release. Please retry when online."
+        }
+        YoutubeDL.getInstance().version(context)?.let {
+            PreferenceUtil.encodeString(YT_DLP_VERSION, it)
+        }
+        YT_DLP_UPDATE_TIME.updateLong(System.currentTimeMillis())
+        return checkNotNull(status)
+    }
+
+    /** Blocking: callers must use a worker thread, as for YoutubeDL.execute. */
+    fun executeYtDlp(
+        request: YoutubeDLRequest,
+        processId: String? = null,
+        callback: ((Float, Long, String) -> Unit)? = null,
+    ): YoutubeDLResponse =
+        // Startup auto-update preferences never bypass this execution-time check.
+        executionGate.execute(checkForUpdate = { updateYtDlpBlocking() }) {
+            YoutubeDL.getInstance().execute(request, processId, callback)
         }
 
     private fun getLatestRelease(): Release =
